@@ -20,7 +20,11 @@ async function startMediasoupWorker() {
             kind: 'audio',
             mimeType: 'audio/opus',
             clockRate: 48000,
-            channels: 2
+            channels: 2,
+            parameters: {
+                useinbandfec: 1,
+                usedtx: 1
+            }
         }]
     });
     console.log('✅ mediasoup worker created');
@@ -38,11 +42,24 @@ io.on('connection', (socket) => {
     socket.on('createWebRtcTransport', async ({ direction }, callback) => {
         try {
             const transport = await router.createWebRtcTransport({
-                listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
+                listenIps: [{ ip: '127.0.0.1', announcedIp: null }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
             });
+
+
+
+            // ✅ ICE 상태 변경 로그
+            transport.on('icestatechange', (state) => {
+                console.log(`🔄 ICE state changed for transport ${transport.id}: ${state}`);
+            });
+
+            // ✅ DTLS 상태 변경 로그
+            transport.on('dtlsstatechange', (state) => {
+                console.log(`🔐 DTLS state changed for transport ${transport.id}: ${state}`);
+            });
+
 
             transports.get(socket.id).push(transport);
 
@@ -51,6 +68,13 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
+                iceServers: [
+                    {
+                        urls: 'turn:221.133.130.37:3478',
+                        username: 'testuser',
+                        credential: 'testpass'
+                    }
+                ]
             });
         } catch (err) {
             callback({ error: err.message });
@@ -81,6 +105,13 @@ io.on('connection', (socket) => {
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
 
+            // ✅ RTP 패킷 전송 로그 (여기 추가!)
+            producer.on('trace', (trace) => {
+                if (trace.type === 'rtp') {
+                    console.log(`📡 RTP packet sent for producer ${producer.id}`);
+                }
+            });
+
             socket.broadcast.emit('newProducer', { producerId: producer.id, socketId: socket.id });
             console.log(`📢 newProducer broadcasted: ${producer.id}`);
         } catch (err) {
@@ -93,7 +124,7 @@ io.on('connection', (socket) => {
         callback(list);
     });
 
-    socket.on('consume', async ({ transportId, producerId }, callback) => {
+    socket.on('consume', async ({ transportId, producerId, rtpCapabilities }, callback) => {
         const all = transports.get(socket.id) || [];
         const transport = all.find(t => t.id === transportId);
         if (!transport) return callback({ error: 'Transport not found' });
@@ -101,13 +132,16 @@ io.on('connection', (socket) => {
         const producer = allProducers.get(producerId);
         if (!producer) return callback({ error: 'Producer not found' });
 
+        console.log('✅ Creating consumer for:', producerId);
+        console.log('✅ Client rtpCapabilities:', rtpCapabilities.codecs.map(c => c.mimeType));
+
         try {
             const consumer = await transport.consume({
                 producerId,
-                rtpCapabilities: router.rtpCapabilities,
+                rtpCapabilities,
                 paused: false,
             });
-
+            console.log('✅ Consumer created:', consumer.id);
             callback({
                 id: consumer.id,
                 producerId: producerId,
