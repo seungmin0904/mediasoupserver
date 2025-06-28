@@ -23,7 +23,8 @@ async function startMediasoupWorker() {
             channels: 2,
             parameters: {
                 useinbandfec: 1,
-                usedtx: 1
+                usedtx: 1,
+                maxptime: 60
             }
         }]
     });
@@ -68,13 +69,13 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
-                iceServers: [
-                    {
-                        urls: 'turn:221.133.130.37:3478',
-                        username: 'testuser',
-                        credential: 'testpass'
-                    }
-                ]
+                // iceServers: [
+                //     {
+                //         rls: 'turn:221.133.130.37:3478',
+                //         username: 'testuser',
+                //         credential: 'testpass'
+                //     }
+                // ]
             });
         } catch (err) {
             callback({ error: err.message });
