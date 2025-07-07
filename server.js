@@ -9,9 +9,13 @@ const io = socketIo(server, { cors: { origin: '*' } });
 
 let worker;
 let router;
-const transports = new Map(); // socketId → Transport[]
-const producers = new Map();  // socketId → Producer[]
-const allProducers = new Map(); // producerId → producer (전역 producer 리스트)
+
+const transports = new Map();        // socket.id -> [transport]
+const producers = new Map();         // socket.id -> [producer]
+const allProducers = new Map();      // producer.id -> producer
+const socketUserMap = new Map();     // socket.id -> userId
+const userIdToNicknameMap = new Map(); // userId -> nickname
+const channelParticipants = new Map(); // channelId -> Set<userId>
 
 async function startMediasoupWorker() {
     worker = await mediasoup.createWorker();
@@ -21,11 +25,7 @@ async function startMediasoupWorker() {
             mimeType: 'audio/opus',
             clockRate: 48000,
             channels: 2,
-            parameters: {
-                useinbandfec: 1,
-                usedtx: 1,
-                maxptime: 60
-            }
+            parameters: { useinbandfec: 1, usedtx: 1, maxptime: 60 }
         }]
     });
     console.log('✅ mediasoup worker created');
@@ -35,6 +35,83 @@ io.on('connection', (socket) => {
     console.log('🔌 client connected:', socket.id);
     transports.set(socket.id, []);
     producers.set(socket.id, []);
+
+    socket.on('register', ({ userId, nickname }) => {
+        socketUserMap.set(socket.id, userId);
+        userIdToNicknameMap.set(userId, nickname);
+    });
+
+    socket.on('joinVoiceChannel', ({ channelId }) => {
+        const userId = socketUserMap.get(socket.id);
+        if (!userId) return;
+
+        if (!channelParticipants.has(channelId)) {
+            channelParticipants.set(channelId, new Set());
+        }
+        channelParticipants.get(channelId).add(userId);
+
+        emitVoiceParticipants(channelId);
+    });
+
+    socket.on('leaveVoiceChannel', ({ channelId }) => {
+        console.log("🚪 leaveVoiceChannel 호출됨:", channelId);
+        console.log("🎯 leave 시작 → producers:", producers.get(socket.id)?.length || 0,
+            "transports:", transports.get(socket.id)?.length || 0);
+
+        const userId = socketUserMap.get(socket.id);
+        if (!userId) return;
+
+        if (channelParticipants.has(channelId)) {
+            channelParticipants.get(channelId).delete(userId);
+            emitVoiceParticipants(channelId);
+        }
+
+        // allProducers 정리: 혹시 producers.get(socket.id)가 누락돼도 확실하게 정리
+        for (const [id, prod] of allProducers.entries()) {
+            if (prod.appData?.socketId === socket.id) {
+                try {
+                    prod.close();
+                } catch (e) {
+                    console.warn("❗ allProducers close 실패:", e);
+                }
+                allProducers.delete(id);
+            }
+        }
+
+        // socket에 연결된 producers 정리
+        (producers.get(socket.id) || []).forEach(p => {
+            try { p.close(); } catch (e) { }
+        });
+        producers.delete(socket.id);
+
+        // consumers 제거 (혹시 있으면)
+        (transports.get(socket.id) || []).forEach(t => {
+            for (const consumer of (t.consumers || [])) {
+                try { consumer.close(); } catch (e) { }
+            }
+        });
+
+        // transport 정리
+        (transports.get(socket.id) || []).forEach(t => {
+            try {
+                t.removeAllListeners();
+                t.close();
+                console.log(`🛑 transport ${t.id} closed manually?`, t.closed);
+            } catch (e) {
+                console.warn("❗ transport close 실패:", e);
+            }
+        });
+        transports.delete(socket.id);
+    });
+
+    const emitVoiceParticipants = (channelId) => {
+        const set = channelParticipants.get(channelId) || new Set();
+        const participants = Array.from(set).map(uid => ({
+            userId: uid,
+            nickname: userIdToNicknameMap.get(uid) || 'unknown'
+        }));
+        io.emit('voiceParticipantsUpdate', { channelId, participants });
+    };
 
     socket.on('getRtpCapabilities', (callback) => {
         callback(router.rtpCapabilities);
@@ -49,19 +126,13 @@ io.on('connection', (socket) => {
                 preferUdp: true,
             });
 
-
-
-            // ✅ ICE 상태 변경 로그
             transport.on('icestatechange', (state) => {
                 console.log(`🔄 ICE state changed for transport ${transport.id}: ${state}`);
             });
 
-            // ✅ DTLS 상태 변경 로그
             transport.on('dtlsstatechange', (state) => {
                 console.log(`🔐 DTLS state changed for transport ${transport.id}: ${state}`);
             });
-
-
             transports.get(socket.id).push(transport);
 
             callback({
@@ -69,13 +140,6 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
-                // iceServers: [
-                //     {
-                //         rls: 'turn:221.133.130.37:3478',
-                //         username: 'testuser',
-                //         credential: 'testpass'
-                //     }
-                // ]
             });
         } catch (err) {
             callback({ error: err.message });
@@ -101,28 +165,23 @@ io.on('connection', (socket) => {
         if (!transport) return callback({ error: 'Transport not found' });
 
         try {
-            const producer = await transport.produce({ kind, rtpParameters });
+            const producer = await transport.produce({ kind, rtpParameters, appData: { socketId: socket.id } });
+            if (!producers.has(socket.id)) {
+                producers.set(socket.id, []);
+            }
             producers.get(socket.id).push(producer);
+
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
 
-            // ✅ RTP 패킷 전송 로그 (여기 추가!)
-            producer.on('trace', (trace) => {
-                if (trace.type === 'rtp') {
-                    console.log(`📡 RTP packet sent for producer ${producer.id}`);
-                }
-            });
-
             socket.broadcast.emit('newProducer', { producerId: producer.id, socketId: socket.id });
-            console.log(`📢 newProducer broadcasted: ${producer.id}`);
         } catch (err) {
             callback({ error: err.message });
         }
     });
 
     socket.on('getProducers', (callback) => {
-        const list = Array.from(allProducers.keys());
-        callback(list);
+        callback(Array.from(allProducers.keys()));
     });
 
     socket.on('consume', async ({ transportId, producerId, rtpCapabilities }, callback) => {
@@ -133,30 +192,32 @@ io.on('connection', (socket) => {
         const producer = allProducers.get(producerId);
         if (!producer) return callback({ error: 'Producer not found' });
 
-        console.log('✅ Creating consumer for:', producerId);
-        console.log('✅ Client rtpCapabilities:', rtpCapabilities.codecs.map(c => c.mimeType));
-
         try {
             const consumer = await transport.consume({
                 producerId,
                 rtpCapabilities,
                 paused: false,
             });
-            console.log('✅ Consumer created:', consumer.id);
+
             callback({
                 id: consumer.id,
-                producerId: producerId,
+                producerId,
                 kind: consumer.kind,
                 rtpParameters: consumer.rtpParameters,
             });
         } catch (err) {
-            console.error('❌ Consume error:', err);
             callback({ error: err.message });
         }
     });
 
     socket.on('disconnect', () => {
         console.log('❌ client disconnected:', socket.id);
+        const userId = socketUserMap.get(socket.id);
+        socketUserMap.delete(socket.id);
+
+        for (const [channelId, set] of channelParticipants.entries()) {
+            if (set.delete(userId)) emitVoiceParticipants(channelId);
+        }
 
         const prods = producers.get(socket.id) || [];
         prods.forEach(p => {
@@ -166,7 +227,14 @@ io.on('connection', (socket) => {
         producers.delete(socket.id);
 
         const trans = transports.get(socket.id) || [];
-        trans.forEach(t => t.close());
+        trans.forEach(t => {
+            try {
+                t.removeAllListeners(); // 이벤트 리스너 제거
+                t.close();
+            } catch (err) {
+                console.warn("❗ transport close error:", err);
+            }
+        });
         transports.delete(socket.id);
     });
 });
