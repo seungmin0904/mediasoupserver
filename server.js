@@ -45,6 +45,9 @@ io.on('connection', (socket) => {
         const userId = socketUserMap.get(socket.id);
         if (!userId) return;
 
+        if (!producers.has(socket.id)) producers.set(socket.id, []);
+        if (!transports.has(socket.id)) transports.set(socket.id, []);
+
         if (!channelParticipants.has(channelId)) {
             channelParticipants.set(channelId, new Set());
         }
@@ -54,10 +57,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('leaveVoiceChannel', ({ channelId }) => {
-        console.log("🚪 leaveVoiceChannel 호출됨:", channelId);
-        console.log("🎯 leave 시작 → producers:", producers.get(socket.id)?.length || 0,
-            "transports:", transports.get(socket.id)?.length || 0);
-
         const userId = socketUserMap.get(socket.id);
         if (!userId) return;
 
@@ -66,23 +65,26 @@ io.on('connection', (socket) => {
             emitVoiceParticipants(channelId);
         }
 
-        // allProducers 정리
-        for (const [id, prod] of allProducers.entries()) {
-            if (prod.appData?.socketId === socket.id) {
-                try { prod.close(); } catch (e) { }
-                allProducers.delete(id);
+        // 🔥 남아있는 Producer 제거
+        const userProducers = producers.get(socket.id) || [];
+        userProducers.forEach((p) => {
+            try {
+                p.close();
+            } catch (e) {
+                console.warn("❗ producer close error:", e);
             }
-        }
-
-        (producers.get(socket.id) || []).forEach(p => {
-            try { p.close(); } catch (e) { }
+            allProducers.delete(p.id);
         });
         producers.delete(socket.id);
 
-        (transports.get(socket.id) || []).forEach(t => {
-            for (const consumer of (t.consumers || [])) {
-                try { consumer.close(); } catch (e) { }
-            }
+        // 🔥 Transport 제거
+        const userTransports = transports.get(socket.id) || [];
+        userTransports.forEach((t) => {
+            (t.consumers || []).forEach((c) => {
+                try {
+                    c.close();
+                } catch (e) { }
+            });
             try {
                 t.close();
                 console.log(`🛑 [LEAVE] transport ${t.id} closed manually?`, t.closed);
@@ -115,31 +117,30 @@ io.on('connection', (socket) => {
                 preferUdp: true,
             });
 
-            // ✅ 리스너 즉시 등록
+            // 🚨 방어 코드: socket.id 등록 확인
+            if (!transports.has(socket.id)) {
+                console.warn(`⚠️ transports 초기화 누락 감지, socket.id: ${socket.id}`);
+                transports.set(socket.id, []);
+            }
+
+            transports.get(socket.id).push(transport);
+
+            // 리스너 등록
             transport.on('icestatechange', (state) => {
                 console.log(`🔄 [TRANSPORT ${transport.id}] ICE state changed: ${state}`);
             });
-
             transport.on('dtlsstatechange', (state) => {
                 console.log(`🔐 [TRANSPORT ${transport.id}] DTLS state changed: ${state}`);
             });
-
-            transports.get(socket.id).push(transport);
 
             callback({
                 id: transport.id,
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
-                //     iceServers: [
-                //    {
-                //     rls:'turn:221.133.130.37:3478',
-                //     username:'testuser',
-                //     credential:'testpass'
-                //    }
-                //   ]
             });
         } catch (err) {
+            console.error("❌ createWebRtcTransport error:", err);
             callback({ error: err.message });
         }
     });
@@ -174,6 +175,10 @@ io.on('connection', (socket) => {
                     console.log(`📡 RTP packet sent for producer ${producer.id}`);
                 }
             });
+            if (!producers.has(socket.id)) {
+                console.warn(`⚠️ producers 초기화 누락: ${socket.id}`);
+                producers.set(socket.id, []);
+            }
             producers.get(socket.id).push(producer);
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
