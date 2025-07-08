@@ -138,6 +138,13 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
+                //     iceServers: [
+                //    {
+                //     rls:'turn:221.133.130.37:3478',
+                //     username:'testuser',
+                //     credential:'testpass'
+                //    }
+                //   ]
             });
         } catch (err) {
             console.error("❌ createWebRtcTransport error:", err);
