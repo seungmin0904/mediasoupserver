@@ -66,37 +66,26 @@ io.on('connection', (socket) => {
             emitVoiceParticipants(channelId);
         }
 
-        // allProducers 정리: 혹시 producers.get(socket.id)가 누락돼도 확실하게 정리
+        // allProducers 정리
         for (const [id, prod] of allProducers.entries()) {
             if (prod.appData?.socketId === socket.id) {
-                try {
-                    prod.close();
-                } catch (e) {
-                    console.warn("❗ allProducers close 실패:", e);
-                }
+                try { prod.close(); } catch (e) { }
                 allProducers.delete(id);
             }
         }
 
-        // socket에 연결된 producers 정리
         (producers.get(socket.id) || []).forEach(p => {
             try { p.close(); } catch (e) { }
         });
         producers.delete(socket.id);
 
-        // consumers 제거 (혹시 있으면)
         (transports.get(socket.id) || []).forEach(t => {
             for (const consumer of (t.consumers || [])) {
                 try { consumer.close(); } catch (e) { }
             }
-        });
-
-        // transport 정리
-        (transports.get(socket.id) || []).forEach(t => {
             try {
-                t.removeAllListeners();
                 t.close();
-                console.log(`🛑 transport ${t.id} closed manually?`, t.closed);
+                console.log(`🛑 [LEAVE] transport ${t.id} closed manually?`, t.closed);
             } catch (e) {
                 console.warn("❗ transport close 실패:", e);
             }
@@ -126,13 +115,15 @@ io.on('connection', (socket) => {
                 preferUdp: true,
             });
 
+            // ✅ 리스너 즉시 등록
             transport.on('icestatechange', (state) => {
-                console.log(`🔄 ICE state changed for transport ${transport.id}: ${state}`);
+                console.log(`🔄 [TRANSPORT ${transport.id}] ICE state changed: ${state}`);
             });
 
             transport.on('dtlsstatechange', (state) => {
-                console.log(`🔐 DTLS state changed for transport ${transport.id}: ${state}`);
+                console.log(`🔐 [TRANSPORT ${transport.id}] DTLS state changed: ${state}`);
             });
+
             transports.get(socket.id).push(transport);
 
             callback({
@@ -140,6 +131,13 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
+                //     iceServers: [
+                //    {
+                //     rls:'turn:221.133.130.37:3478',
+                //     username:'testuser',
+                //     credential:'testpass'
+                //    }
+                //   ]
             });
         } catch (err) {
             callback({ error: err.message });
@@ -165,12 +163,18 @@ io.on('connection', (socket) => {
         if (!transport) return callback({ error: 'Transport not found' });
 
         try {
-            const producer = await transport.produce({ kind, rtpParameters, appData: { socketId: socket.id } });
-            if (!producers.has(socket.id)) {
-                producers.set(socket.id, []);
-            }
+            const producer = await transport.produce({
+                kind,
+                rtpParameters,
+                appData: { socketId: socket.id },
+                traceEventTypes: ['rtp']
+            });
+            producer.on('trace', (trace) => {
+                if (trace.type === 'rtp') {
+                    console.log(`📡 RTP packet sent for producer ${producer.id}`);
+                }
+            });
             producers.get(socket.id).push(producer);
-
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
 
@@ -229,8 +233,8 @@ io.on('connection', (socket) => {
         const trans = transports.get(socket.id) || [];
         trans.forEach(t => {
             try {
-                t.removeAllListeners(); // 이벤트 리스너 제거
                 t.close();
+                console.log(`🛑 [DISCONNECT] transport ${t.id} closed manually?`, t.closed);
             } catch (err) {
                 console.warn("❗ transport close error:", err);
             }
