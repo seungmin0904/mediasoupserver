@@ -2,10 +2,24 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const mediasoup = require('mediasoup');
+const fs = require('fs');
+const https = require('https');
 
 const app = express();
-const server = http.createServer(app);
-const io = socketIo(server, { cors: { origin: '*' } });
+const options = {
+    key: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/privkey.pem'),
+    cert: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/fullchain.pem')
+};
+
+// ✅ https server 생성
+const server = https.createServer(options, app);
+
+// ✅ io에 secure server 적용
+const io = socketIo(server, {
+    cors: {
+        origin: '*',
+    }
+});
 
 let worker;
 let router;
@@ -111,7 +125,7 @@ io.on('connection', (socket) => {
     socket.on('createWebRtcTransport', async ({ direction }, callback) => {
         try {
             const transport = await router.createWebRtcTransport({
-                listenIps: [{ ip: '127.0.0.1', announcedIp: null }],
+                listenIps: [{ ip: '0.0.0.0', announcedIp: '52.65.37.11' }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
@@ -138,13 +152,13 @@ io.on('connection', (socket) => {
                 iceParameters: transport.iceParameters,
                 iceCandidates: transport.iceCandidates,
                 dtlsParameters: transport.dtlsParameters,
-                //     iceServers: [
-                //    {
-                //     rls:'turn:221.133.130.37:3478',
-                //     username:'testuser',
-                //     credential:'testpass'
-                //    }
-                //   ]
+                iceServers: [
+                    {
+                        urls: 'turn:52.65.37.11:3478',
+                        username: 'testuser',
+                        credential: 'testpass'
+                    }
+                ]
             });
         } catch (err) {
             console.error("❌ createWebRtcTransport error:", err);
