@@ -1,35 +1,40 @@
 const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const mediasoup = require('mediasoup');
 const fs = require('fs');
 const https = require('https');
+const socketIo = require('socket.io');
+const mediasoup = require('mediasoup');
 
 const app = express();
-const options = {
+
+// HTTPS 인증서 로드
+const credentials = {
     key: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/privkey.pem'),
     cert: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/fullchain.pem')
 };
 
-// ✅ https server 생성
-const server = https.createServer(options, app);
+const httpsServer = https.createServer(credentials, app);
 
-// ✅ io에 secure server 적용
-const io = socketIo(server, {
+const io = socketIo(httpsServer, {
     cors: {
-        origin: '*',
+        origin: [
+            "https://serverpro.kro.kr",
+            "https://api.serverpro.kro.kr",
+            "http://localhost:5173"
+        ],
+        methods: ["GET", "POST"],
+        credentials: true
     }
 });
 
 let worker;
 let router;
 
-const transports = new Map();        // socket.id -> [transport]
-const producers = new Map();         // socket.id -> [producer]
-const allProducers = new Map();      // producer.id -> producer
-const socketUserMap = new Map();     // socket.id -> userId
-const userIdToNicknameMap = new Map(); // userId -> nickname
-const channelParticipants = new Map(); // channelId -> Set<userId>
+const transports = new Map();
+const producers = new Map();
+const allProducers = new Map();
+const socketUserMap = new Map();
+const userIdToNicknameMap = new Map();
+const channelParticipants = new Map();
 
 async function startMediasoupWorker() {
     worker = await mediasoup.createWorker();
@@ -79,26 +84,16 @@ io.on('connection', (socket) => {
             emitVoiceParticipants(channelId);
         }
 
-        // 🔥 남아있는 Producer 제거
         const userProducers = producers.get(socket.id) || [];
         userProducers.forEach((p) => {
-            try {
-                p.close();
-            } catch (e) {
-                console.warn("❗ producer close error:", e);
-            }
+            try { p.close(); } catch (e) { console.warn("❗ producer close error:", e); }
             allProducers.delete(p.id);
         });
         producers.delete(socket.id);
 
-        // 🔥 Transport 제거
         const userTransports = transports.get(socket.id) || [];
         userTransports.forEach((t) => {
-            (t.consumers || []).forEach((c) => {
-                try {
-                    c.close();
-                } catch (e) { }
-            });
+            (t.consumers || []).forEach((c) => { try { c.close(); } catch (e) { } });
             try {
                 t.close();
                 console.log(`🛑 [LEAVE] transport ${t.id} closed manually?`, t.closed);
@@ -125,21 +120,15 @@ io.on('connection', (socket) => {
     socket.on('createWebRtcTransport', async ({ direction }, callback) => {
         try {
             const transport = await router.createWebRtcTransport({
-                listenIps: [{ ip: '0.0.0.0', announcedIp: '52.65.37.11' }],
+                listenIps: [{ ip: '0.0.0.0', announcedIp: '3.35.114.7' }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
             });
 
-            // 🚨 방어 코드: socket.id 등록 확인
-            if (!transports.has(socket.id)) {
-                console.warn(`⚠️ transports 초기화 누락 감지, socket.id: ${socket.id}`);
-                transports.set(socket.id, []);
-            }
-
+            if (!transports.has(socket.id)) transports.set(socket.id, []);
             transports.get(socket.id).push(transport);
 
-            // 리스너 등록
             transport.on('icestatechange', (state) => {
                 console.log(`🔄 [TRANSPORT ${transport.id}] ICE state changed: ${state}`);
             });
@@ -154,7 +143,7 @@ io.on('connection', (socket) => {
                 dtlsParameters: transport.dtlsParameters,
                 iceServers: [
                     {
-                        urls: 'turn:52.65.37.11:3478',
+                        urls: 'turn:3.35.114.7:3478',
                         username: 'testuser',
                         credential: 'testpass'
                     }
@@ -191,15 +180,14 @@ io.on('connection', (socket) => {
                 appData: { socketId: socket.id },
                 traceEventTypes: ['rtp']
             });
+
             producer.on('trace', (trace) => {
                 if (trace.type === 'rtp') {
                     console.log(`📡 RTP packet sent for producer ${producer.id}`);
                 }
             });
-            if (!producers.has(socket.id)) {
-                console.warn(`⚠️ producers 초기화 누락: ${socket.id}`);
-                producers.set(socket.id, []);
-            }
+
+            if (!producers.has(socket.id)) producers.set(socket.id, []);
             producers.get(socket.id).push(producer);
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
@@ -269,5 +257,5 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(4000, () => console.log('🚀 Server listening on port 4000'));
+httpsServer.listen(4000, () => console.log('🚀 HTTPS Server listening on port 4000'));
 startMediasoupWorker();
