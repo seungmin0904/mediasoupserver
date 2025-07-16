@@ -13,8 +13,10 @@ const credentials = {
 };
 
 const httpsServer = https.createServer(credentials, app);
+// (credentials, app); https 사용시
 
 const io = socketIo(httpsServer, {
+    path: "/socket.io",
     cors: {
         origin: [
             "https://serverpro.kro.kr",
@@ -257,5 +259,5 @@ io.on('connection', (socket) => {
     });
 });
 
-httpsServer.listen(4000, () => console.log('🚀 HTTPS Server listening on port 4000'));
+httpsServer.listen(4000, '0.0.0.0', () => console.log('🚀 HTTPS Server listening on port 4000'));
 startMediasoupWorker();
