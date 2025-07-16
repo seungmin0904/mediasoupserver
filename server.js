@@ -194,7 +194,11 @@ io.on('connection', (socket) => {
             allProducers.set(producer.id, producer);
             callback({ id: producer.id });
 
-            socket.broadcast.emit('newProducer', { producerId: producer.id, socketId: socket.id });
+            socket.broadcast.emit('newProducer', {
+                producerId: producer.id,
+                socketId: socket.id,
+                userId: socketUserMap.get(socket.id)
+            });
         } catch (err) {
             callback({ error: err.message });
         }
