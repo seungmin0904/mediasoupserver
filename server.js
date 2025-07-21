@@ -1,21 +1,28 @@
+require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const https = require('https');
+const http = require('http');
 const socketIo = require('socket.io');
 const mediasoup = require('mediasoup');
-
 const app = express();
 
-// HTTPS 인증서 로드
-const credentials = {
-    key: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/privkey.pem'),
-    cert: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/fullchain.pem')
-};
+// ===== 환경에따른 HTTPS 또는 HTTP 분기 =====
+let server;
+if (process.env.NODE_ENV === 'production') {
+    const credentials = {
+        key: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/privkey.pem'),
+        cert: fs.readFileSync('/etc/letsencrypt/live/serverpro.kro.kr/fullchain.pem')
+    };
+    server = https.createServer(credentials, app);
+    console.log('✅ HTTPS mode (production)');
+} else {
+    server = http.createServer(app);
+    console.log('✅ HTTP mode (development)');
+}
 
-const httpsServer = https.createServer(credentials, app);
-// (credentials, app); https 사용시
 
-const io = socketIo(httpsServer, {
+const io = socketIo(server, {
     path: "/socket.io",
     cors: {
         origin: [
@@ -27,6 +34,10 @@ const io = socketIo(httpsServer, {
         credentials: true
     }
 });
+// ===== ✅ TURN 설정 (from .env) =====
+const TURN_HOST = process.env.TURN_HOST;
+const TURN_USER = process.env.TURN_USER;
+const TURN_PASS = process.env.TURN_PASS;
 
 let worker;
 let router;
@@ -122,7 +133,7 @@ io.on('connection', (socket) => {
     socket.on('createWebRtcTransport', async ({ direction }, callback) => {
         try {
             const transport = await router.createWebRtcTransport({
-                listenIps: [{ ip: '0.0.0.0', announcedIp: '3.35.114.7' }],
+                listenIps: [{ ip: '0.0.0.0', announcedIp: TURN_HOST }],
                 enableUdp: true,
                 enableTcp: true,
                 preferUdp: true,
@@ -145,9 +156,9 @@ io.on('connection', (socket) => {
                 dtlsParameters: transport.dtlsParameters,
                 iceServers: [
                     {
-                        urls: 'turn:3.35.114.7:3478',
-                        username: 'testuser',
-                        credential: 'testpass'
+                        urls: `turn:${TURN_HOST}:3478`,
+                        username: TURN_USER,
+                        credential: TURN_PASS
                     }
                 ]
             });
@@ -263,5 +274,5 @@ io.on('connection', (socket) => {
     });
 });
 
-httpsServer.listen(4000, '0.0.0.0', () => console.log('🚀 HTTPS Server listening on port 4000'));
+server.listen(4000, '0.0.0.0', () => console.log('🚀 HTTPS or HTTP Server listening on port 4000'));
 startMediasoupWorker();
