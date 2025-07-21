@@ -9,8 +9,7 @@ yarn-error.log*
 dist/
 build/
 # 환경설정
-.env
-.env.local
+.env*
 
 # 운영체제 및 편집기별 파일
 .DS_Store
