@@ -72,6 +72,7 @@ io.on('connection', (socket) => {
     producers.set(socket.id, []);
 
     socket.on('register', ({ userId, nickname }) => {
+        console.log("📌 register 호출됨", userId, nickname);
         socketUserMap.set(socket.id, userId);
         userIdToNicknameMap.set(userId, nickname);
     });
@@ -134,6 +135,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('createWebRtcTransport', async ({ direction }, callback) => {
+        console.log("📨 createWebRtcTransport 요청 도착:", direction);
         try {
             const transport = await router.createWebRtcTransport({
                 listenIps: [{ ip: '0.0.0.0', announcedIp: TURN_HOST }],
@@ -141,6 +143,7 @@ io.on('connection', (socket) => {
                 enableTcp: true,
                 preferUdp: true,
             });
+            console.log("🚀 Transport 생성됨:", transport.id);
 
             if (!transports.has(socket.id)) transports.set(socket.id, []);
             transports.get(socket.id).push(transport);
@@ -172,19 +175,28 @@ io.on('connection', (socket) => {
     });
 
     socket.on('connectTransport', async ({ transportId, dtlsParameters }, callback) => {
+        console.log(`🔗 connectTransport 요청 도착: ${transportId}`);
+
         const all = transports.get(socket.id) || [];
         const transport = all.find(t => t.id === transportId);
-        if (!transport) return callback({ error: 'Transport not found' });
+        if (!transport) {
+            console.warn("❗ transport not found:", transportId);
+            return callback({ error: 'Transport not found' });
+        }
 
         try {
             await transport.connect({ dtlsParameters });
+            console.log(`✅ connectTransport 완료: ${transport.id}`);
             callback('success');
         } catch (err) {
+            console.error("❌ connectTransport 실패:", err);
             callback({ error: err.message });
         }
     });
 
     socket.on('produce', async ({ transportId, kind, rtpParameters }, callback) => {
+        console.log(`📥 produce 요청 도착: transport=${transportId}, kind=${kind}`);
+
         const all = transports.get(socket.id) || [];
         const transport = all.find(t => t.id === transportId);
         if (!transport) return callback({ error: 'Transport not found' });
@@ -196,6 +208,7 @@ io.on('connection', (socket) => {
                 appData: { socketId: socket.id },
                 traceEventTypes: ['rtp']
             });
+            console.log(`📤 producer 생성됨: ${producer.id}`);
 
             producer.on('trace', (trace) => {
                 if (trace.type === 'rtp') {
@@ -214,6 +227,7 @@ io.on('connection', (socket) => {
                 userId: socketUserMap.get(socket.id)
             });
         } catch (err) {
+            console.error("❌ produce 실패:", err);
             callback({ error: err.message });
         }
     });
